@@ -5,14 +5,41 @@ const { authMiddleware, generateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
-// POST /api/auth/register
-router.post('/register', async (req, res) => {
+// Password strength validator
+function validatePassword(pw) {
+  if (!pw || pw.length < 8) return 'Password must be at least 8 characters.';
+  if (pw.length > 128) return 'Password must be under 128 characters.';
+  if (!/[A-Z]/.test(pw)) return 'Password must contain at least one uppercase letter.';
+  if (!/[a-z]/.test(pw)) return 'Password must contain at least one lowercase letter.';
+  if (!/[0-9]/.test(pw)) return 'Password must contain at least one number.';
+  return null;
+}
+
+// Input sanitizer — trim + limit length
+function sanitize(str, maxLen = 255) {
+  if (typeof str !== 'string') return str;
+  return str.trim().slice(0, maxLen);
+}
+
+// POST /api/auth/register — admin-only (must be logged in as admin to create new users)
+router.post('/register', authMiddleware, async (req, res) => {
   try {
-    const { username, email, password, full_name, phone } = req.body;
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can register new users.' });
+    }
+
+    const username = sanitize(req.body.username, 50);
+    const email = sanitize(req.body.email, 100);
+    const password = req.body.password;
+    const full_name = sanitize(req.body.full_name, 100);
+    const phone = sanitize(req.body.phone, 30);
 
     if (!username || !email || !password || !full_name) {
       return res.status(400).json({ error: 'username, email, password, and full_name are required.' });
     }
+
+    const pwError = validatePassword(password);
+    if (pwError) return res.status(400).json({ error: pwError });
 
     const { rows: existing } = await pool.query('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email]);
     if (existing.length > 0) {
@@ -39,10 +66,15 @@ router.post('/register', async (req, res) => {
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const username = sanitize(req.body.username, 100);
+    const password = req.body.password;
 
     if (!username || !password) {
       return res.status(400).json({ error: 'username and password are required.' });
+    }
+
+    if (password.length > 128) {
+      return res.status(400).json({ error: 'Invalid credentials.' });
     }
 
     const { rows } = await pool.query('SELECT * FROM users WHERE username = $1 OR email = $1', [username]);
@@ -102,6 +134,9 @@ router.put('/password', authMiddleware, async (req, res) => {
     if (!current_password || !new_password) {
       return res.status(400).json({ error: 'current_password and new_password are required.' });
     }
+
+    const pwError = validatePassword(new_password);
+    if (pwError) return res.status(400).json({ error: pwError });
 
     const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
     const user = rows[0];

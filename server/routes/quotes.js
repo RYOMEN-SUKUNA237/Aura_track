@@ -3,13 +3,28 @@ const router = express.Router();
 const pool = require('../db');
 const { authMiddleware } = require('../middleware/auth');
 
-// ─── PUBLIC: Submit a quote request ─────────────────────────────────
+function sanitize(str, maxLen = 255) {
+  if (typeof str !== 'string') return str;
+  return str.trim().slice(0, maxLen);
+}
+
+// ─── PUBLIC: Submit a quote request ─────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { full_name, company, email, phone, service_type, details } = req.body;
+    const full_name = sanitize(req.body.full_name, 100);
+    const company = sanitize(req.body.company, 100);
+    const email = sanitize(req.body.email, 100);
+    const phone = sanitize(req.body.phone, 30);
+    const service_type = sanitize(req.body.service_type, 100);
+    const details = sanitize(req.body.details, 2000);
 
     if (!full_name || !email || !service_type) {
       return res.status(400).json({ error: 'Full name, email, and service type are required.' });
+    }
+
+    // Basic email format check
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format.' });
     }
 
     const { rows } = await pool.query(`

@@ -5,12 +5,20 @@ const crypto = require('crypto');
 
 const router = express.Router();
 
+function sanitize(str, maxLen = 255) {
+  if (typeof str !== 'string') return str;
+  return str.trim().slice(0, maxLen);
+}
+
 // ─── PUBLIC ENDPOINTS (visitor-facing) ───────────────────────────────
 
 // POST /api/messages/conversations — Start or resume a conversation
 router.post('/conversations', async (req, res) => {
   try {
-    const { visitor_id, visitor_name, visitor_email, subject } = req.body;
+    const visitor_id = sanitize(req.body.visitor_id, 100);
+    const visitor_name = sanitize(req.body.visitor_name, 100);
+    const visitor_email = sanitize(req.body.visitor_email, 100);
+    const subject = sanitize(req.body.subject, 200);
 
     if (!visitor_id) {
       return res.status(400).json({ error: 'visitor_id is required.' });
@@ -47,7 +55,10 @@ router.post('/conversations', async (req, res) => {
 // POST /api/messages/send — Send a message (visitor)
 router.post('/send', async (req, res) => {
   try {
-    const { conversation_id, content, sender_name, sender_type } = req.body;
+    const conversation_id = req.body.conversation_id;
+    const content = sanitize(req.body.content, 2000);
+    const sender_name = sanitize(req.body.sender_name, 100);
+    const sender_type = req.body.sender_type;
 
     if (!conversation_id || !content) {
       return res.status(400).json({ error: 'conversation_id and content are required.' });

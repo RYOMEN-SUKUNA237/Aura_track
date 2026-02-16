@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 // Import routes
@@ -14,10 +16,58 @@ const quoteRoutes = require('./routes/quotes');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ─── MIDDLEWARE ───────────────────────────────────────────────────────
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// ─── SECURITY MIDDLEWARE ─────────────────────────────────────────────
+app.use(helmet());
+app.disable('x-powered-by');
+
+// CORS — only allow your frontend origins
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (mobile apps, curl, Postman in dev)
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error('Blocked by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// Rate limiting — global
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again later.' },
+});
+app.use(globalLimiter);
+
+// Strict rate limiting on auth endpoints (anti brute-force)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+});
+
+// Strict rate limiting on public endpoints (anti spam)
+const publicLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please slow down.' },
+});
+
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // Request logger
 app.use((req, res, next) => {
@@ -30,31 +80,17 @@ app.use((req, res, next) => {
 });
 
 // ─── ROUTES ──────────────────────────────────────────────────────────
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/couriers', courierRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/shipments', shipmentRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/messages', messageRoutes);
-app.use('/api/quotes', quoteRoutes);
+app.use('/api/messages', publicLimiter, messageRoutes);
+app.use('/api/quotes', publicLimiter, quoteRoutes);
 
-// Root route — friendly message
+// Root route — minimal, no API map exposed
 app.get('/', (req, res) => {
-  res.json({
-    name: 'Aura Track API',
-    version: '1.0.0',
-    status: 'running',
-    message: 'This is the backend API server. The frontend is at http://localhost:3000',
-    endpoints: {
-      health: '/api/health',
-      auth: '/api/auth/login',
-      couriers: '/api/couriers',
-      customers: '/api/customers',
-      shipments: '/api/shipments',
-      dashboard: '/api/dashboard/stats',
-      publicTracking: '/api/shipments/:trackingId/track',
-    },
-  });
+  res.json({ name: 'Aura Track API', status: 'running' });
 });
 
 // Health check
@@ -62,14 +98,17 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.0' });
 });
 
-// 404 handler
+// 404 handler — don't reflect the URL back (prevents reflected content attacks)
 app.use((req, res) => {
-  res.status(404).json({ error: `Route ${req.method} ${req.originalUrl} not found.` });
+  res.status(404).json({ error: 'Not found.' });
 });
 
-// Error handler
+// Error handler — never leak stack traces
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  if (err.message === 'Blocked by CORS') {
+    return res.status(403).json({ error: 'Origin not allowed.' });
+  }
+  console.error('Unhandled error:', err.message);
   res.status(500).json({ error: 'Internal server error.' });
 });
 
