@@ -35,19 +35,36 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, []);
 
   const scrollToSection = (href: string) => {
-    setMobileOpen(false);
     const id = href.replace('#', '');
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
-    } else {
-      // Navigate to home page first, then scroll after render
-      navigate('/');
-      setTimeout(() => {
-        const target = document.getElementById(id);
-        if (target) target.scrollIntoView({ behavior: 'smooth' });
-      }, 400);
-    }
+    
+    // Close mobile menu immediately for better UX
+    setMobileOpen(false);
+    
+    // Small delay to ensure menu starts closing before scroll
+    setTimeout(() => {
+      const el = document.getElementById(id);
+      if (el) {
+        // Use scrollIntoView with options for better mobile support
+        el.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'start',
+          inline: 'nearest'
+        });
+      } else if (window.location.pathname !== '/') {
+        // Navigate to home page first, then scroll after render
+        navigate('/');
+        setTimeout(() => {
+          const target = document.getElementById(id);
+          if (target) {
+            target.scrollIntoView({ 
+              behavior: 'smooth', 
+              block: 'start',
+              inline: 'nearest'
+            });
+          }
+        }, 400);
+      }
+    }, 150);
   };
 
   return (
@@ -140,26 +157,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 space-y-1">
                 {navLinks.map((link, i) => (
-                  <motion.a
+                  <motion.button
                     key={link.label}
-                    href={link.href}
-                    onClick={(e) => { e.preventDefault(); scrollToSection(link.href); }}
+                    onClick={() => scrollToSection(link.href)}
                     initial={{ x: -20, opacity: 0 }}
                     animate={{ x: 0, opacity: 1 }}
                     transition={{ delay: i * 0.05 }}
-                    className="block px-4 py-3 text-sm font-medium text-gray-700 hover:text-[#0a192f] hover:bg-gray-50 rounded-sm transition-colors"
+                    className="block w-full text-left px-4 py-3 text-sm font-medium text-gray-700 hover:text-[#0a192f] hover:bg-gray-50 rounded-sm transition-colors"
                   >
                     {link.label}
-                  </motion.a>
+                  </motion.button>
                 ))}
                 <div className="pt-3 border-t border-gray-100 mt-2">
-                  <a
-                    href="#contact"
-                    onClick={(e) => { e.preventDefault(); scrollToSection('#contact'); }}
-                    className="block w-full text-center px-5 py-3 bg-[#0a192f] text-white text-sm font-medium rounded-sm"
+                  <button
+                    onClick={() => scrollToSection('#contact')}
+                    className="block w-full text-center px-5 py-3 bg-[#0a192f] text-white text-sm font-medium rounded-sm hover:bg-[#112d57] transition-colors"
                   >
                     Get a Quote
-                  </a>
+                  </button>
                 </div>
               </div>
             </motion.div>
