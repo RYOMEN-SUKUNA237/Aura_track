@@ -4,6 +4,7 @@ import Home from './pages/Home';
 import Dashboard from './pages/Dashboard';
 import TrackingDashboard from './pages/TrackingDashboard';
 import ServiceDetailPage from './pages/ServiceDetail';
+import ReviewsPage from './pages/Reviews';
 import ChatWidget from './components/ChatWidget';
 import { AnimatePresence } from 'framer-motion';
 
@@ -19,6 +20,7 @@ const AppContent: React.FC = () => {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/track/:trackingId" element={<TrackingDashboard />} />
           <Route path="/services/:slug" element={<ServiceDetailPage />} />
+          <Route path="/reviews" element={<ReviewsPage />} />
         </Routes>
       </AnimatePresence>
       {!isAdmin && <ChatWidget />}

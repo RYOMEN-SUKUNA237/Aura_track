@@ -557,27 +557,27 @@ const ProjectsSection: React.FC = () => (
   </section>
 );
 
-/* ──────────────────────────── TESTIMONIALS ──────────────────────────── */
-const testimonials = [
+/* ──────────────────────────── TESTIMONIALS (PREVIEW) ──────────────────────────── */
+const previewReviews = [
   {
     name: 'Sarah Mitchell',
     role: 'VP Supply Chain, TechFlow Inc.',
     avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?fm=jpg&fit=crop&w=100&q=80',
-    text: 'NexusRoute Global Logistics transformed our supply chain operations. Their real-time tracking and proactive communication have reduced our delivery issues by over 60%.',
+    text: 'NexusRoute transformed our supply chain. Real-time tracking and proactive communication have reduced our delivery issues by over 60%.',
     rating: 5,
   },
   {
     name: 'James Okonkwo',
     role: 'CEO, AfriTrade Exports',
     avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?fm=jpg&fit=crop&w=100&q=80',
-    text: 'From customs clearance to last-mile delivery, NexusRoute Global Logistics handles everything seamlessly. They\'ve been our logistics backbone for 5 years and counting.',
+    text: 'From customs clearance to last-mile delivery, NexusRoute handles everything seamlessly. Our logistics backbone for 5 years.',
     rating: 5,
   },
   {
     name: 'Elena Vasquez',
     role: 'Logistics Director, MedPharma Global',
     avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?fm=jpg&fit=crop&w=100&q=80',
-    text: 'Their temperature-controlled pharmaceutical shipping is best-in-class. Zero spoilage incidents across 3,000+ shipments. Remarkable reliability.',
+    text: 'Temperature-controlled pharmaceutical shipping is best-in-class. Zero spoilage across 3,000+ shipments. Remarkable reliability.',
     rating: 5,
   },
 ];
@@ -592,13 +592,13 @@ const TestimonialsSection: React.FC = () => (
           </div>
           <h2 className="text-3xl sm:text-4xl font-bold text-[#0a192f] mb-4">What Our Clients Say</h2>
           <p className="text-gray-600">
-            Trusted by industry leaders worldwide for reliable, efficient logistics solutions.
+            Trusted by 500+ global businesses. Over 30 verified customer reviews.
           </p>
         </div>
       </Reveal>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
-        {testimonials.map((t, i) => (
+        {previewReviews.map((t, i) => (
           <Reveal key={t.name} direction="bottom" delay={i * 0.15}>
             <div className="bg-white p-6 sm:p-8 rounded-sm border border-gray-100 shadow-sm hover:shadow-lg transition-shadow h-full flex flex-col">
               <div className="flex gap-1 mb-4">
@@ -618,6 +618,27 @@ const TestimonialsSection: React.FC = () => (
           </Reveal>
         ))}
       </div>
+
+      {/* See All Reviews Button */}
+      <Reveal direction="bottom" delay={0.3}>
+        <div className="text-center mt-12">
+          <div className="inline-flex items-center gap-3 bg-white border border-gray-200 rounded-lg px-6 py-4 shadow-sm mb-6">
+            <div className="flex gap-0.5">
+              {[1,2,3,4,5].map(s => <Star key={s} className="w-4 h-4 text-yellow-400 fill-yellow-400" />)}
+            </div>
+            <span className="text-sm text-gray-600">4.9 / 5 · <strong className="text-[#0a192f]">30+ reviews</strong></span>
+          </div>
+          <div>
+            <Link
+              to="/reviews"
+              className="inline-flex items-center gap-2 px-8 py-3.5 bg-[#0a192f] text-white font-semibold rounded-sm hover:bg-blue-700 transition-all shadow-lg hover:shadow-blue-700/25 group"
+            >
+              See All Reviews
+              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            </Link>
+          </div>
+        </div>
+      </Reveal>
     </div>
   </section>
 );

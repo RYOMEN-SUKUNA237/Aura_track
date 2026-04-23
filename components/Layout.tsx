@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Menu, X, ArrowRight, Phone, Mail, MapPin, Facebook, Twitter, Linkedin, Instagram, ChevronUp } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import logoImg from '../data/ogo.jpg';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -13,7 +14,7 @@ const navLinks = [
   { label: 'Services', href: '#services' },
   { label: 'Track & Trace', href: '#track' },
   { label: 'Projects', href: '#projects' },
-  { label: 'Testimonials', href: '#testimonials' },
+  { label: 'Reviews', href: '/reviews' },
   { label: 'FAQ', href: '#faq' },
   { label: 'Contact Us', href: '#contact' },
 ];
@@ -35,6 +36,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, []);
 
   const scrollToSection = (href: string) => {
+    if (href.startsWith('/')) {
+      navigate(href);
+      setMobileOpen(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    
     const id = href.replace('#', '');
     
     // Close mobile menu immediately for better UX
@@ -100,13 +108,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 lg:h-20 flex items-center justify-between">
           {/* Logo */}
           <a
-            href="#home"
+            href="/"
             onClick={(e) => { e.preventDefault(); scrollToSection('#home'); }}
             className="text-xl lg:text-2xl font-bold text-[#0a192f] tracking-tight flex items-center gap-2 flex-shrink-0"
           >
-            <div className="w-8 h-8 bg-[#0a192f] rounded-sm flex items-center justify-center">
-              <span className="text-white text-xs font-bold">NR</span>
-            </div>
+            <img src={logoImg} alt="Logo" className="w-8 h-8 object-cover rounded-sm" />
             <span>NEXUSROUTE</span>
           </a>
 
@@ -217,9 +223,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             {/* Brand */}
             <div className="sm:col-span-2 lg:col-span-1">
               <div className="flex items-center gap-2 mb-4">
-                <div className="w-8 h-8 bg-white rounded-sm flex items-center justify-center">
-                  <span className="text-[#0a192f] text-xs font-bold">NR</span>
-                </div>
+                <img src={logoImg} alt="Logo" className="w-8 h-8 object-cover rounded-sm" />
                 <span className="text-xl font-bold">NEXUSROUTE</span>
               </div>
               <p className="text-gray-400 text-sm leading-relaxed mb-6">
