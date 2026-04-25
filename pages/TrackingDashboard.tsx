@@ -568,7 +568,6 @@ const TrackingDashboard: React.FC = () => {
                 </div>
               </div>
             )}
-            )}
 
             {/* Email Subscription */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
