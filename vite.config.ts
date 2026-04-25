@@ -1,20 +1,11 @@
 import path from 'path';
-import fs from 'fs';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-function getEnvVar(name: string): string {
-  for (const file of ['.env.local', '.env']) {
-    try {
-      const content = fs.readFileSync(path.resolve(__dirname, file), 'utf-8');
-      const match = content.match(new RegExp(`${name}=(.+)`));
-      if (match) return match[1].trim();
-    } catch {}
-  }
-  return '';
-}
+export default defineConfig(({ mode }) => {
+    // Load .env files (including .env.local) for the current mode
+    const env = loadEnv(mode, process.cwd(), '');
 
-export default defineConfig(() => {
     return {
       server: {
         port: 3000,
@@ -28,8 +19,8 @@ export default defineConfig(() => {
       },
       plugins: [react()],
       define: {
-        '__MAPBOX_TOKEN__': JSON.stringify(getEnvVar('MAPBOX_TOKEN')),
-        '__GEMINI_API_KEY__': JSON.stringify(getEnvVar('GEMINI_API_KEY')),
+        '__MAPBOX_TOKEN__': JSON.stringify(env.VITE_MAPBOX_TOKEN || env.MAPBOX_TOKEN || ''),
+        '__GEMINI_API_KEY__': JSON.stringify(env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || ''),
       },
       resolve: {
         alias: {
