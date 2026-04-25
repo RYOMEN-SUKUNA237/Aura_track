@@ -21,22 +21,26 @@ const PORT = process.env.PORT || 5000;
 app.use(helmet());
 app.disable('x-powered-by');
 
-// CORS — only allow your frontend origins
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://localhost:5173',
-  process.env.FRONTEND_URL,
-].filter(Boolean);
-
+// CORS — allow frontend origins dynamically
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (mobile apps, curl, Postman in dev)
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    // Allow requests with no origin (mobile apps, curl, Postman in dev, or same origin)
+    if (!origin) return cb(null, true);
+    
+    // Always allow localhost
+    if (origin.startsWith('http://localhost:')) return cb(null, true);
+    
+    // Always allow the production domains
+    if (origin.includes('nexusroutegloballogistics.com')) return cb(null, true);
+    if (origin.includes('vercel.app')) return cb(null, true);
+    
+    // Allow explicitly defined FRONTEND_URL if present
+    if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) return cb(null, true);
+    
     cb(new Error('Blocked by CORS'));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 

@@ -117,6 +117,19 @@ router.post('/login', async (req, res) => {
 // GET /api/auth/me
 router.get('/me', authMiddleware, async (req, res) => {
   try {
+    // If it's a Supabase user, req.user won't have a username, just email and role
+    if (!req.user.username && req.user.email) {
+      return res.json({
+        user: {
+          id: req.user.id,
+          email: req.user.email,
+          full_name: 'Admin User',
+          role: 'admin',
+          created_at: new Date().toISOString()
+        }
+      });
+    }
+
     const { rows } = await pool.query('SELECT id, username, email, full_name, role, phone, avatar, created_at FROM users WHERE id = $1', [req.user.id]);
     if (!rows[0]) return res.status(404).json({ error: 'User not found.' });
     res.json({ user: rows[0] });
