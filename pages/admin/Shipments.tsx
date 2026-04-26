@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { 
-  Package, Search, Plus, ChevronDown, Pause, Play, Eye, MapPin,
-  CheckCircle, Clock, Truck, AlertCircle, RotateCcw, X, ArrowRight, Loader2, Navigation
+import {
+  Package, Search, Plus, Pause, Play, Eye, MapPin, Edit2,
+  CheckCircle, Clock, Truck, RotateCcw, X, ArrowRight, Loader2, Navigation
 } from 'lucide-react';
-import { Shipment, Courier, generateTrackingId } from './types';
+import { Shipment, Courier } from './types';
 import * as api from '../../services/api';
-import { geocodeAddress, geocodeSearch, getRoute, determineTransportModes, formatDistance, formatDuration, MAPBOX_TOKEN } from '../../utils/mapbox';
+import { geocodeAddress, geocodeSearch, getRoute, determineTransportModes, formatDistance, MAPBOX_TOKEN } from '../../utils/mapbox';
+import { buildTransportPlans, formatPlanDuration, TransportPlan } from '../../utils/transportPlanner';
 
 interface ShipmentsProps {
   shipments: Shipment[];
@@ -114,13 +115,24 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
   const [selectedShipment, setSelectedShipment] = useState<Shipment | null>(null);
 
   const [form, setForm] = useState({
-    sender: '', receiver: '', origin: '', destination: '',
+    sender: '', senderEmail: '',
+    receiver: '', receiverEmail: '',
+    origin: '', destination: '',
     weight: '', type: 'General', courierId: '',
+    estimatedDelivery: '',
   });
   const [creating, setCreating] = useState(false);
-  const [routePreview, setRoutePreview] = useState<{
-    distance: number; duration: number; modes: string[]; summary: string;
-  } | null>(null);
+  const [routePreview, setRoutePreview] = useState<{ distance: number; duration: number; modes: string[]; summary: string } | null>(null);
+  const [transportPlans, setTransportPlans] = useState<TransportPlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [targetDate, setTargetDate] = useState('');
+  const [pauseModal, setPauseModal] = useState<{ open: boolean; shipment: Shipment | null }>({ open: false, shipment: null });
+  const [pauseCategory, setPauseCategory] = useState('');
+  const [pauseReason, setPauseReason] = useState('');
+  const [editModal, setEditModal] = useState<{ open: boolean; shipment: Shipment | null }>({ open: false, shipment: null });
+  const [editForm, setEditForm] = useState({ senderName: '', senderEmail: '', receiverName: '', receiverEmail: '', estimatedDelivery: '', description: '', specialInstructions: '' });
+  const [saving, setSaving] = useState(false);
 
   const handleCreate = async () => {
     if (!form.sender || !form.receiver || !form.origin || !form.destination) return;
@@ -135,33 +147,29 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
       let routeSummary: string | undefined;
 
       if (MAPBOX_TOKEN) {
-        // Geocode origin and destination
-        const [oGeo, dGeo] = await Promise.all([
-          geocodeAddress(form.origin),
-          geocodeAddress(form.destination),
-        ]);
+        const [oGeo, dGeo] = await Promise.all([geocodeAddress(form.origin), geocodeAddress(form.destination)]);
         originCoords = oGeo;
         destCoords = dGeo;
-
-        // Get route if both geocoded
         if (originCoords && destCoords) {
-          const route = await getRoute(
-            [originCoords.lng, originCoords.lat],
-            [destCoords.lng, destCoords.lat]
-          );
+          const route = await getRoute([originCoords.lng, originCoords.lat], [destCoords.lng, destCoords.lat]);
           if (route) {
             routeData = route.geometry;
             routeDistance = route.distance;
             routeDuration = route.duration;
             routeSummary = route.summary;
-            transportModes = determineTransportModes(route.distance, form.type);
+            const selPlan = transportPlans.find(p => p.id === selectedPlanId);
+            transportModes = selPlan
+              ? selPlan.legs.map(l => l.icon + ' ' + l.label)
+              : determineTransportModes(route.distance, form.type);
           }
         }
       }
 
       await api.shipments.create({
         sender_name: form.sender,
+        sender_email: form.senderEmail || undefined,
         receiver_name: form.receiver,
+        receiver_email: form.receiverEmail || undefined,
         origin: form.origin,
         destination: form.destination,
         origin_lat: originCoords?.lat,
@@ -171,14 +179,17 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
         weight: form.weight ? `${form.weight} kg` : undefined,
         cargo_type: form.type,
         courier_id: form.courierId || undefined,
+        estimated_delivery: form.estimatedDelivery || undefined,
         route_data: routeData,
         transport_modes: transportModes,
         route_distance: routeDistance,
         route_duration: routeDuration,
         route_summary: routeSummary,
       } as any);
-      setForm({ sender: '', receiver: '', origin: '', destination: '', weight: '', type: 'General', courierId: '' });
+      setForm({ sender: '', senderEmail: '', receiver: '', receiverEmail: '', origin: '', destination: '', weight: '', type: 'General', courierId: '', estimatedDelivery: '' });
       setRoutePreview(null);
+      setTransportPlans([]);
+      setSelectedPlanId(null);
       setShowCreate(false);
       onRefresh();
     } catch (err: any) {
@@ -189,31 +200,100 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
   };
 
   const previewRoute = async () => {
-    if (!form.origin || !form.destination || !MAPBOX_TOKEN) return;
+    if (!form.origin || !form.destination) return;
     setRoutePreview(null);
-    const [oGeo, dGeo] = await Promise.all([
-      geocodeAddress(form.origin),
-      geocodeAddress(form.destination),
-    ]);
-    if (oGeo && dGeo) {
+    setTransportPlans([]);
+    setSelectedPlanId(null);
+    setPlanLoading(true);
+    try {
+      const [oGeo, dGeo] = await Promise.all([geocodeAddress(form.origin), geocodeAddress(form.destination)]);
+      if (!oGeo || !dGeo) { console.warn('Could not geocode addresses'); return; }
+
+      // Haversine fallback distance (always works)
+      const toRad = (d: number) => (d * Math.PI) / 180;
+      const R = 6371;
+      const dLat = toRad(dGeo.lat - oGeo.lat);
+      const dLon = toRad(dGeo.lng - oGeo.lng);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(oGeo.lat)) * Math.cos(toRad(dGeo.lat)) * Math.sin(dLon/2)**2;
+      const haversineDist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+      // Try road route for more accurate road distance
       const route = await getRoute([oGeo.lng, oGeo.lat], [dGeo.lng, dGeo.lat]);
-      if (route) {
-        setRoutePreview({
-          distance: route.distance,
-          duration: route.duration,
-          modes: determineTransportModes(route.distance, form.type),
-          summary: route.summary,
-        });
+      const distKm = (route && route.distance > 0) ? route.distance / 1000 : haversineDist;
+
+      setRoutePreview({
+        distance: distKm * 1000,
+        duration: route ? route.duration : (distKm / 80) * 3600,
+        modes: [],
+        summary: route?.summary || '',
+      });
+
+      const plans = await buildTransportPlans(form.origin, form.destination, [oGeo.lng, oGeo.lat], [dGeo.lng, dGeo.lat], distKm);
+      setTransportPlans(plans);
+      const rec = plans.find(p => p.isRecommended) || plans[0];
+      if (rec) {
+        setSelectedPlanId(rec.id);
+        setForm(p => ({ ...p, estimatedDelivery: rec.estimatedDeliveryDate }));
       }
+    } catch (err) {
+      console.error('Preview route error:', err);
+    } finally {
+      setPlanLoading(false);
     }
   };
 
-  const handlePauseResume = async (shipment: Shipment) => {
+  const handlePauseResume = (shipment: Shipment) => {
+    setPauseCategory('');
+    setPauseReason('');
+    setPauseModal({ open: true, shipment });
+  };
+
+  const handleConfirmPause = async () => {
+    if (!pauseModal.shipment) return;
     try {
-      await api.shipments.togglePause(shipment.trackingId);
+      await api.shipments.togglePause(pauseModal.shipment.trackingId, {
+        pause_category: pauseCategory || undefined,
+        pause_reason: pauseReason || undefined,
+      });
+      setPauseModal({ open: false, shipment: null });
       onRefresh();
     } catch (err: any) {
       alert(err.message || 'Failed to pause/resume shipment.');
+    }
+  };
+
+  const handleOpenEdit = (shipment: Shipment) => {
+    setEditForm({
+      senderName: shipment.sender || '',
+      senderEmail: (shipment as any).senderEmail || '',
+      receiverName: shipment.receiver || '',
+      receiverEmail: (shipment as any).receiverEmail || '',
+      estimatedDelivery: shipment.estimatedDelivery || '',
+      description: (shipment as any).description || '',
+      specialInstructions: (shipment as any).specialInstructions || '',
+    });
+    setEditModal({ open: true, shipment });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editModal.shipment) return;
+    setSaving(true);
+    try {
+      await api.shipments.update(editModal.shipment.trackingId, {
+        sender_name: editForm.senderName || undefined,
+        sender_email: editForm.senderEmail || undefined,
+        receiver_name: editForm.receiverName || undefined,
+        receiver_email: editForm.receiverEmail || undefined,
+        estimated_delivery: editForm.estimatedDelivery || undefined,
+        description: editForm.description || undefined,
+        special_instructions: editForm.specialInstructions || undefined,
+      });
+      setEditModal({ open: false, shipment: null });
+      onRefresh();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update shipment.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -280,27 +360,27 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
             <div className="p-6 space-y-5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Sender *</label>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Sender Name *</label>
                   <input type="text" value={form.sender} onChange={(e) => setForm(p => ({ ...p, sender: e.target.value }))}
-                    placeholder="Company or name" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] focus:ring-1 focus:ring-[#0a192f] outline-none" />
+                    placeholder="Company or full name" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] focus:ring-1 focus:ring-[#0a192f] outline-none" />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Receiver *</label>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Receiver Name *</label>
                   <input type="text" value={form.receiver} onChange={(e) => setForm(p => ({ ...p, receiver: e.target.value }))}
-                    placeholder="Company or name" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] focus:ring-1 focus:ring-[#0a192f] outline-none" />
+                    placeholder="Company or full name" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] focus:ring-1 focus:ring-[#0a192f] outline-none" />
                 </div>
-                <CityAutocomplete
-                  value={form.origin}
-                  onChange={(val) => setForm(p => ({ ...p, origin: val }))}
-                  placeholder="Search city, e.g. New York"
-                  label="Origin *"
-                />
-                <CityAutocomplete
-                  value={form.destination}
-                  onChange={(val) => setForm(p => ({ ...p, destination: val }))}
-                  placeholder="Search city, e.g. Los Angeles"
-                  label="Destination *"
-                />
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Sender Email</label>
+                  <input type="email" value={form.senderEmail} onChange={(e) => setForm(p => ({ ...p, senderEmail: e.target.value }))}
+                    placeholder="sender@company.com" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] focus:ring-1 focus:ring-[#0a192f] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Receiver Email</label>
+                  <input type="email" value={form.receiverEmail} onChange={(e) => setForm(p => ({ ...p, receiverEmail: e.target.value }))}
+                    placeholder="receiver@company.com" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] focus:ring-1 focus:ring-[#0a192f] outline-none" />
+                </div>
+                <CityAutocomplete value={form.origin} onChange={(val) => setForm(p => ({ ...p, origin: val }))} placeholder="Search city, e.g. New York" label="Origin *" />
+                <CityAutocomplete value={form.destination} onChange={(val) => setForm(p => ({ ...p, destination: val }))} placeholder="Search city, e.g. Los Angeles" label="Destination *" />
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Weight (kg)</label>
                   <input type="number" value={form.weight} onChange={(e) => setForm(p => ({ ...p, weight: e.target.value }))}
@@ -310,15 +390,9 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
                   <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Cargo Type</label>
                   <select value={form.type} onChange={(e) => setForm(p => ({ ...p, type: e.target.value }))}
                     className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none bg-white">
-                    <option>General</option>
-                    <option>Electronics</option>
-                    <option>Pharmaceuticals</option>
-                    <option>Perishables</option>
-                    <option>Auto Parts</option>
-                    <option>Documents</option>
-                    <option>Fragile</option>
-                    <option>Hazardous</option>
-                    <option>Live Animals</option>
+                    <option>General</option><option>Electronics</option><option>Pharmaceuticals</option>
+                    <option>Perishables</option><option>Auto Parts</option><option>Documents</option>
+                    <option>Fragile</option><option>Hazardous</option><option>Live Animals</option>
                   </select>
                 </div>
                 <div className="sm:col-span-2">
@@ -333,32 +407,75 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
                 </div>
               </div>
 
-              {/* Route Preview */}
+              {/* Transport Planner */}
               {MAPBOX_TOKEN && form.origin && form.destination && (
                 <div className="bg-gray-50 rounded-lg p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-sm font-medium text-[#0a192f]">
-                      <Navigation size={14} className="text-blue-600" /> Route Analysis
+                      <Navigation size={14} className="text-blue-600" /> Transport Planner
                     </div>
-                    <button onClick={previewRoute} type="button"
-                      className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-500 transition-colors flex items-center gap-1">
-                      <MapPin size={12} /> Preview Route
+                    <button onClick={previewRoute} type="button" disabled={planLoading}
+                      className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-500 transition-colors flex items-center gap-1 disabled:opacity-50">
+                      {planLoading ? <Loader2 size={12} className="animate-spin" /> : <MapPin size={12} />}
+                      {planLoading ? 'Calculating...' : 'Preview Route'}
                     </button>
                   </div>
+
                   {routePreview && (
+                    <p className="text-xs text-gray-500">
+                      📏 {formatDistance(routePreview.distance)}
+                      {routePreview.summary && <span className="text-gray-400"> · via {routePreview.summary}</span>}
+                    </p>
+                  )}
+
+                  {transportPlans.length > 0 && (
                     <div className="space-y-2">
-                      <div className="flex gap-4 text-xs text-gray-600">
-                        <span className="flex items-center gap-1"><MapPin size={12} className="text-blue-500" /> {formatDistance(routePreview.distance)}</span>
-                        <span className="flex items-center gap-1"><Clock size={12} className="text-blue-500" /> {formatDuration(routePreview.duration)}</span>
-                        {routePreview.summary && <span className="text-gray-400">via {routePreview.summary}</span>}
-                      </div>
                       <div>
-                        <p className="text-[10px] text-gray-400 uppercase font-medium mb-1">Transport Chain</p>
-                        <div className="flex flex-wrap gap-1">
-                          {routePreview.modes.map((mode, i) => (
-                            <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">{mode}</span>
-                          ))}
-                        </div>
+                        <label className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">🎯 Target delivery date (filters plans)</label>
+                        <input type="date" value={targetDate} onChange={e => setTargetDate(e.target.value)}
+                          className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:border-blue-500 outline-none" />
+                      </div>
+
+                      <p className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">Select transport plan</p>
+                      {transportPlans.map(plan => {
+                        const canMeet = !targetDate || plan.estimatedDeliveryDate <= targetDate;
+                        const isSelected = selectedPlanId === plan.id;
+                        return (
+                          <button key={plan.id} type="button"
+                            onClick={() => { setSelectedPlanId(plan.id); setForm(p => ({ ...p, estimatedDelivery: plan.estimatedDeliveryDate })); }}
+                            className={`w-full text-left p-3 rounded-lg border-2 transition-all ${
+                              isSelected ? 'border-blue-600 bg-blue-50' :
+                              !canMeet && targetDate ? 'border-gray-100 opacity-50' :
+                              'border-gray-200 hover:border-blue-300 bg-white'
+                            }`}>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-base">{plan.icon}</span>
+                                <span className="text-sm font-semibold text-[#0a192f]">{plan.planName}</span>
+                                {plan.isRecommended && <span className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-bold uppercase tracking-wide">★ Recommended</span>}
+                                {!canMeet && targetDate && <span className="text-[9px] px-1.5 py-0.5 bg-red-100 text-red-600 rounded-full font-bold">Too slow</span>}
+                              </div>
+                              <div className="text-right">
+                                <p className="text-xs font-bold text-[#0a192f]">{formatPlanDuration(plan.totalDurationHours)}</p>
+                                <p className="text-[10px] text-gray-400">Est: {plan.estimatedDeliveryDate}</p>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1">
+                              {plan.legs.map((leg, i) => (
+                                <React.Fragment key={i}>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{leg.icon} {leg.label}</span>
+                                  {i < plan.legs.length - 1 && <span className="text-[10px] text-gray-300">→</span>}
+                                </React.Fragment>
+                              ))}
+                            </div>
+                          </button>
+                        );
+                      })}
+
+                      <div>
+                        <label className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">Override delivery date (optional)</label>
+                        <input type="date" value={form.estimatedDelivery} onChange={e => setForm(p => ({ ...p, estimatedDelivery: e.target.value }))}
+                          className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:border-blue-500 outline-none" />
                       </div>
                     </div>
                   )}
@@ -366,7 +483,7 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
               )}
 
               <div className="flex gap-3 pt-2">
-                <button onClick={() => { setShowCreate(false); setRoutePreview(null); }} className="flex-1 px-4 py-2.5 border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">Cancel</button>
+                <button onClick={() => { setShowCreate(false); setRoutePreview(null); setTransportPlans([]); setSelectedPlanId(null); setTargetDate(''); }} className="flex-1 px-4 py-2.5 border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">Cancel</button>
                 <button onClick={handleCreate} disabled={!form.sender || !form.receiver || !form.origin || !form.destination || creating}
                   className="flex-1 px-4 py-2.5 bg-[#0a192f] text-white text-sm font-medium rounded-lg hover:bg-[#112d57] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                   {creating ? <><Loader2 size={14} className="animate-spin" /> Creating...</> : 'Create Shipment'}
@@ -489,6 +606,9 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
                         <button onClick={() => setSelectedShipment(shipment)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-[#0a192f]" title="View Details">
                           <Eye size={16} />
                         </button>
+                        <button onClick={() => handleOpenEdit(shipment)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-blue-600" title="Edit Shipment">
+                          <Edit2 size={16} />
+                        </button>
                         {shipment.status !== 'delivered' && (
                           <button onClick={() => handlePauseResume(shipment)}
                             className={`p-2 hover:bg-gray-100 rounded-lg transition-colors ${shipment.isPaused ? 'text-green-600' : 'text-amber-500'}`}
@@ -508,6 +628,143 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
           </table>
         </div>
       </div>
+
+      {/* ── Edit Shipment Modal ──────────────────────────────────── */}
+      {editModal.open && editModal.shipment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setEditModal({ open: false, shipment: null })}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h3 className="text-lg font-bold text-[#0a192f]">Edit Shipment</h3>
+                <p className="text-xs text-gray-400 font-mono">{editModal.shipment.trackingId}</p>
+              </div>
+              <button onClick={() => setEditModal({ open: false, shipment: null })} className="p-1 hover:bg-gray-100 rounded-lg"><X size={20} className="text-gray-500" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Sender Name</label>
+                  <input type="text" value={editForm.senderName} onChange={e => setEditForm(p => ({ ...p, senderName: e.target.value }))}
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Sender Email</label>
+                  <input type="email" value={editForm.senderEmail} onChange={e => setEditForm(p => ({ ...p, senderEmail: e.target.value }))}
+                    placeholder="sender@example.com" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Receiver Name</label>
+                  <input type="text" value={editForm.receiverName} onChange={e => setEditForm(p => ({ ...p, receiverName: e.target.value }))}
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Receiver Email</label>
+                  <input type="email" value={editForm.receiverEmail} onChange={e => setEditForm(p => ({ ...p, receiverEmail: e.target.value }))}
+                    placeholder="receiver@example.com" className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Estimated Delivery Date</label>
+                <input type="date" value={editForm.estimatedDelivery} onChange={e => setEditForm(p => ({ ...p, estimatedDelivery: e.target.value }))}
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Description</label>
+                <input type="text" value={editForm.description} onChange={e => setEditForm(p => ({ ...p, description: e.target.value }))}
+                  placeholder="Cargo description..." className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Special Instructions</label>
+                <textarea value={editForm.specialInstructions} onChange={e => setEditForm(p => ({ ...p, specialInstructions: e.target.value }))}
+                  rows={2} placeholder="Handle with care, temperature-sensitive, etc..."
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none resize-none" />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setEditModal({ open: false, shipment: null })}
+                  className="flex-1 px-4 py-2.5 border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">Cancel</button>
+                <button onClick={handleSaveEdit} disabled={saving}
+                  className="flex-1 px-4 py-2.5 bg-[#0a192f] text-white text-sm font-medium rounded-lg hover:bg-[#112d57] transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+                  {saving ? <><Loader2 size={14} className="animate-spin" /> Saving...</> : '💾 Save Changes'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Pause / Resume Modal ─────────────────────────────────── */}
+      {pauseModal.open && pauseModal.shipment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setPauseModal({ open: false, shipment: null })}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <h3 className="text-lg font-bold text-[#0a192f]">
+                {pauseModal.shipment.isPaused ? '▶ Resume Shipment' : '⏸ Pause Shipment'}
+              </h3>
+              <button onClick={() => setPauseModal({ open: false, shipment: null })} className="p-1 hover:bg-gray-100 rounded-lg"><X size={20} className="text-gray-500" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-gray-50 px-4 py-3 rounded-lg flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-400 uppercase tracking-wide">Shipment</p>
+                  <p className="font-mono font-bold text-[#0a192f]">{pauseModal.shipment.trackingId}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-gray-400">{pauseModal.shipment.origin}</p>
+                  <p className="text-xs text-gray-400">→ {pauseModal.shipment.destination}</p>
+                </div>
+              </div>
+
+              {!pauseModal.shipment.isPaused && (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Hold Category *</label>
+                    <select value={pauseCategory} onChange={e => setPauseCategory(e.target.value)}
+                      className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none bg-white">
+                      <option value="">Select a category...</option>
+                      {['Customs Hold', 'Weather Delay', 'Port Congestion', 'Document Issue', 'Transit Change', 'Recipient Unavailable', 'Security Check', 'Other'].map(c => (
+                        <option key={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Reason / Details</label>
+                    <textarea value={pauseReason} onChange={e => setPauseReason(e.target.value)} rows={3}
+                      placeholder="Brief explanation — this will be included in the customer email..."
+                      className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] focus:ring-1 focus:ring-[#0a192f] outline-none resize-none" />
+                  </div>
+                  <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 px-3 py-2.5 rounded-lg">
+                    <span className="text-amber-500 mt-0.5">⚡</span>
+                    <p className="text-xs text-amber-700">An email notification will be sent <strong>directly to the customer</strong> with the hold reason as soon as you confirm.</p>
+                  </div>
+                </>
+              )}
+
+              {pauseModal.shipment.isPaused && (
+                <div className="flex items-start gap-2 bg-green-50 border border-green-200 px-3 py-2.5 rounded-lg">
+                  <span className="text-green-500 mt-0.5">✅</span>
+                  <p className="text-xs text-green-700">Resuming will <strong>automatically email the customer</strong> that their shipment is back in transit.</p>
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-1">
+                <button onClick={() => setPauseModal({ open: false, shipment: null })}
+                  className="flex-1 px-4 py-2.5 border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+                  Cancel
+                </button>
+                <button onClick={handleConfirmPause}
+                  disabled={!pauseModal.shipment.isPaused && !pauseCategory}
+                  className={`flex-1 px-4 py-2.5 text-white text-sm font-medium rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    pauseModal.shipment.isPaused ? 'bg-green-600 hover:bg-green-500' : 'bg-amber-500 hover:bg-amber-400'
+                  }`}>
+                  {pauseModal.shipment.isPaused
+                    ? <><Play size={14} /> Resume & Notify Customer</>
+                    : <><Pause size={14} /> Pause & Notify Customer</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

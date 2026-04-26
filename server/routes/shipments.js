@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { authMiddleware } = require('../middleware/auth');
 const { generateTrackingId } = require('../utils/generators');
+const { sendMail, buildShipmentCreationEmail, buildShipmentPauseEmail } = require('../utils/mailer');
 let createTrackingUpdateDraft;
 try {
   createTrackingUpdateDraft = require('./emails').createTrackingUpdateDraft;
@@ -251,6 +252,22 @@ router.post('/', authMiddleware, async (req, res) => {
     ]);
 
     res.status(201).json({ shipment });
+
+    // ── Send confirmation emails (fire-and-forget, don't block response) ──
+    setImmediate(async () => {
+      try {
+        if (shipment.sender_email) {
+          const emailData = buildShipmentCreationEmail({ shipment, role: 'sender' });
+          await sendMail({ to: shipment.sender_email, subject: emailData.subject, html: emailData.html, text: emailData.text });
+        }
+        if (shipment.receiver_email) {
+          const emailData = buildShipmentCreationEmail({ shipment, role: 'receiver' });
+          await sendMail({ to: shipment.receiver_email, subject: emailData.subject, html: emailData.html, text: emailData.text });
+        }
+      } catch (emailErr) {
+        console.error('Shipment creation email error:', emailErr.message);
+      }
+    });
   } catch (err) {
     console.error('Create shipment error:', err);
     res.status(500).json({ error: 'Internal server error.' });
@@ -415,7 +432,25 @@ router.patch('/:id/pause', authMiddleware, async (req, res) => {
     const { rows: updated } = await pool.query('SELECT * FROM shipments WHERE id = $1', [shipment.id]);
     res.json({ shipment: updated[0] });
 
-    // Create email drafts for tracking subscribers on pause/resume (fire-and-forget)
+    // ── Direct pause/resume email to receiver (fire-and-forget) ──────
+    setImmediate(async () => {
+      try {
+        const recipientEmail = shipment.receiver_email || shipment.sender_email;
+        if (recipientEmail) {
+          const emailData = buildShipmentPauseEmail({
+            shipment,
+            isPaused: newPaused,
+            pauseCategory: newPaused ? (pause_category || null) : null,
+            pauseReason: newPaused ? (pause_reason || null) : null,
+          });
+          await sendMail({ to: recipientEmail, subject: emailData.subject, html: emailData.html, text: emailData.text });
+        }
+      } catch (emailErr) {
+        console.error('Pause email error:', emailErr.message);
+      }
+    });
+
+    // Also create tracking update drafts for subscribers
     if (createTrackingUpdateDraft) {
       createTrackingUpdateDraft({
         trackingId: shipment.tracking_id,
