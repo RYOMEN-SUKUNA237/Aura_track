@@ -22,6 +22,22 @@ const statusConfig: Record<string, { color: string; bg: string; icon: React.Reac
 
 const statusOrder = ['pending', 'picked-up', 'in-transit', 'out-for-delivery', 'delivered'];
 
+/** Format a stored estimated_delivery value (ISO datetime or date-only) for display */
+function formatEstDelivery(val: string | null | undefined): string {
+  if (!val) return 'Not set';
+  // If it's a full ISO datetime, show date + time in local timezone
+  if (val.includes('T')) {
+    return new Date(val).toLocaleString(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  }
+  // Legacy date-only value
+  return new Date(val + 'T12:00:00Z').toLocaleDateString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+  });
+}
+
 const TrackingDashboard: React.FC = () => {
   const { trackingId } = useParams<{ trackingId: string }>();
   const [data, setData] = useState<any>(null);
@@ -427,8 +443,11 @@ const TrackingDashboard: React.FC = () => {
                           <Clock size={14} className="text-gray-400 mt-0.5 flex-shrink-0" />
                           <div>
                             <p className="text-[10px] text-gray-400 uppercase">Est. Delivery</p>
-                            <p className="font-medium text-[#0a192f]">{shipment.estimated_delivery}</p>
+                            <p className="font-medium text-[#0a192f] text-xs leading-snug">{formatEstDelivery(shipment.estimated_delivery)}</p>
                             {liveEta && <p className="text-[10px] text-blue-600 font-medium mt-0.5">{liveEta}</p>}
+                            {shipment.is_paused && (
+                              <p className="text-[10px] text-amber-600 font-medium mt-0.5">⏸ Delivery paused — ETA will update on resume</p>
+                            )}
                           </div>
                         </div>
                       )}

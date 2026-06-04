@@ -26,6 +26,33 @@ const statusConfig: Record<string, { color: string; icon: React.ReactNode }> = {
   paused: { color: 'bg-amber-100 text-amber-700', icon: <Pause size={12} /> },
 };
 
+// ─── DATETIME HELPERS ────────────────────────────────────────────────
+/** Convert a datetime-local input value (local time) to a UTC ISO string for the API */
+function localDtToISO(val: string): string {
+  if (!val) return '';
+  return new Date(val).toISOString();
+}
+
+/** Convert a UTC ISO string to a datetime-local input value (local time) */
+function isoToLocalDt(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso.includes('T') ? iso : iso + 'T23:59:59Z');
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Format a UTC ISO or date-only string for human-readable display */
+function formatDeliveryDisplay(iso: string): string {
+  if (!iso) return 'Not set';
+  const d = new Date(iso.includes('T') ? iso : iso + 'T23:59:59Z');
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
 // City autocomplete component
 const CityAutocomplete: React.FC<{
   value: string;
@@ -179,7 +206,8 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
         weight: form.weight ? `${form.weight} kg` : undefined,
         cargo_type: form.type,
         courier_id: form.courierId || undefined,
-        estimated_delivery: form.estimatedDelivery || undefined,
+        // Always send as full UTC ISO string so server stores datetime precision
+        estimated_delivery: form.estimatedDelivery ? localDtToISO(form.estimatedDelivery) : undefined,
         route_data: routeData,
         transport_modes: transportModes,
         route_distance: routeDistance,
@@ -233,7 +261,8 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
       const rec = plans.find(p => p.isRecommended) || plans[0];
       if (rec) {
         setSelectedPlanId(rec.id);
-        setForm(p => ({ ...p, estimatedDelivery: rec.estimatedDeliveryDate }));
+        // Convert UTC ISO datetime to local datetime-local input format
+        setForm(p => ({ ...p, estimatedDelivery: isoToLocalDt(rec.estimatedDeliveryDate) }));
       }
     } catch (err) {
       console.error('Preview route error:', err);
@@ -268,7 +297,8 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
       senderEmail: (shipment as any).senderEmail || '',
       receiverName: shipment.receiver || '',
       receiverEmail: (shipment as any).receiverEmail || '',
-      estimatedDelivery: shipment.estimatedDelivery || '',
+      // Convert stored ISO/date to local datetime-local format for the input
+      estimatedDelivery: isoToLocalDt(shipment.estimatedDelivery || ''),
       description: (shipment as any).description || '',
       specialInstructions: (shipment as any).specialInstructions || '',
     });
@@ -284,7 +314,8 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
         sender_email: editForm.senderEmail || undefined,
         receiver_name: editForm.receiverName || undefined,
         receiver_email: editForm.receiverEmail || undefined,
-        estimated_delivery: editForm.estimatedDelivery || undefined,
+        // Convert local datetime-local value back to UTC ISO for the server
+        estimated_delivery: editForm.estimatedDelivery ? localDtToISO(editForm.estimatedDelivery) : undefined,
         description: editForm.description || undefined,
         special_instructions: editForm.specialInstructions || undefined,
       });
@@ -431,18 +462,19 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
                   {transportPlans.length > 0 && (
                     <div className="space-y-2">
                       <div>
-                        <label className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">🎯 Target delivery date (filters plans)</label>
-                        <input type="date" value={targetDate} onChange={e => setTargetDate(e.target.value)}
+                        <label className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">🎯 Target delivery date &amp; time (filters plans)</label>
+                        <input type="datetime-local" value={targetDate} onChange={e => setTargetDate(e.target.value)}
                           className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:border-blue-500 outline-none" />
                       </div>
 
                       <p className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">Select transport plan</p>
                       {transportPlans.map(plan => {
-                        const canMeet = !targetDate || plan.estimatedDeliveryDate <= targetDate;
+                        // Compare as Date objects: plan uses UTC ISO, targetDate uses local datetime-local
+                        const canMeet = !targetDate || new Date(plan.estimatedDeliveryDate) <= new Date(targetDate);
                         const isSelected = selectedPlanId === plan.id;
                         return (
                           <button key={plan.id} type="button"
-                            onClick={() => { setSelectedPlanId(plan.id); setForm(p => ({ ...p, estimatedDelivery: plan.estimatedDeliveryDate })); }}
+                            onClick={() => { setSelectedPlanId(plan.id); setForm(p => ({ ...p, estimatedDelivery: isoToLocalDt(plan.estimatedDeliveryDate) })); }}
                             className={`w-full text-left p-3 rounded-lg border-2 transition-all ${
                               isSelected ? 'border-blue-600 bg-blue-50' :
                               !canMeet && targetDate ? 'border-gray-100 opacity-50' :
@@ -457,7 +489,7 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
                               </div>
                               <div className="text-right">
                                 <p className="text-xs font-bold text-[#0a192f]">{formatPlanDuration(plan.totalDurationHours)}</p>
-                                <p className="text-[10px] text-gray-400">Est: {plan.estimatedDeliveryDate}</p>
+                                <p className="text-[10px] text-gray-400">Est: {formatDeliveryDisplay(plan.estimatedDeliveryDate)}</p>
                               </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-1">
@@ -473,8 +505,8 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
                       })}
 
                       <div>
-                        <label className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">Override delivery date (optional)</label>
-                        <input type="date" value={form.estimatedDelivery} onChange={e => setForm(p => ({ ...p, estimatedDelivery: e.target.value }))}
+                        <label className="text-[10px] text-gray-400 uppercase font-semibold tracking-wide">Override delivery date &amp; time (optional)</label>
+                        <input type="datetime-local" value={form.estimatedDelivery} onChange={e => setForm(p => ({ ...p, estimatedDelivery: e.target.value }))}
                           className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:border-blue-500 outline-none" />
                       </div>
                     </div>
@@ -664,9 +696,12 @@ const Shipments: React.FC<ShipmentsProps> = ({ shipments, setShipments, couriers
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Estimated Delivery Date</label>
-                <input type="date" value={editForm.estimatedDelivery} onChange={e => setEditForm(p => ({ ...p, estimatedDelivery: e.target.value }))}
+                <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Estimated Delivery — Date &amp; Time</label>
+                <input type="datetime-local" value={editForm.estimatedDelivery} onChange={e => setEditForm(p => ({ ...p, estimatedDelivery: e.target.value }))}
                   className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:border-[#0a192f] outline-none" />
+                {editForm.estimatedDelivery && (
+                  <p className="text-[10px] text-gray-400 mt-1">⏱ {formatDeliveryDisplay(localDtToISO(editForm.estimatedDelivery))}</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wide">Description</label>

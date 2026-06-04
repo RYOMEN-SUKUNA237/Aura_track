@@ -206,7 +206,10 @@ router.post('/', authMiddleware, async (req, res) => {
     } while (attempts < 10);
 
     const initialStatus = courier_id ? 'picked-up' : 'pending';
-    const estDelivery = estimated_delivery || new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0];
+    // Store as full ISO datetime (never date-only) so sub-24h deliveries work correctly
+    const estDelivery = estimated_delivery
+      ? (estimated_delivery.includes('T') ? estimated_delivery : estimated_delivery + 'T23:59:59.000Z')
+      : new Date(Date.now() + 5 * 86400000).toISOString();
     const departedAt = courier_id ? new Date().toISOString() : null;
 
     const { rows: inserted } = await pool.query(`
@@ -362,9 +365,10 @@ router.patch('/:id/assign', authMiddleware, async (req, res) => {
     const courier = cRows[0];
     if (!courier) return res.status(404).json({ error: 'Courier not found.' });
 
+    const departedAt = shipment.departed_at || new Date().toISOString();
     await pool.query(
-      "UPDATE shipments SET courier_id = $1, status = CASE WHEN status = 'pending' THEN 'picked-up' ELSE status END WHERE id = $2",
-      [courier_id, shipment.id]
+      "UPDATE shipments SET courier_id = $1, status = CASE WHEN status = 'pending' THEN 'picked-up' ELSE status END, departed_at = $2 WHERE id = $3",
+      [courier_id, departedAt, shipment.id]
     );
 
     await pool.query("UPDATE couriers SET status = 'on-delivery' WHERE courier_id = $1", [courier_id]);
@@ -401,21 +405,48 @@ router.patch('/:id/pause', authMiddleware, async (req, res) => {
       if (pause_reason) action += `: ${pause_reason}`;
     }
 
-    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
     if (newPaused) {
-      // Pausing: record paused_at + reason
-      await pool.query(`UPDATE shipments SET is_paused = TRUE, status = $1, paused_at = $2,
-        pause_category = $3, pause_reason = $4 WHERE id = $5`,
-        [newStatus, nowIso, pause_category || null, pause_reason || null, shipment.id]);
+      // ── PAUSING ──────────────────────────────────────────────────────
+      // Record the exact UTC moment of pause. This freezes the progress
+      // calculation: elapsedActive = (now - departed) - totalPausedMs - currentPauseDuration
+      // Because currentPauseDuration grows while paused, progress stays locked.
+      await pool.query(
+        `UPDATE shipments SET is_paused = TRUE, status = $1, paused_at = $2,
+         pause_category = $3, pause_reason = $4 WHERE id = $5`,
+        [newStatus, nowIso, pause_category || null, pause_reason || null, shipment.id]
+      );
     } else {
-      // Resuming: accumulate paused duration, clear reason
-      let accumulatedMs = parseInt(shipment.total_paused_ms) || 0;
+      // ── RESUMING ─────────────────────────────────────────────────────
+      // 1) Calculate exact duration spent paused this session
+      let pauseDurationMs = 0;
       if (shipment.paused_at) {
-        accumulatedMs += Date.now() - new Date(shipment.paused_at).getTime();
+        pauseDurationMs = nowMs - new Date(shipment.paused_at).getTime();
+        if (pauseDurationMs < 0) pauseDurationMs = 0;
       }
-      await pool.query(`UPDATE shipments SET is_paused = FALSE, status = $1, paused_at = NULL, total_paused_ms = $2,
-        pause_category = NULL, pause_reason = NULL WHERE id = $3`,
-        [newStatus, accumulatedMs, shipment.id]);
+
+      // 2) Accumulate total paused time
+      let accumulatedMs = (parseInt(shipment.total_paused_ms) || 0) + pauseDurationMs;
+
+      // 3) KEY FIX: Push estimated_delivery forward by the exact pause duration.
+      //    This keeps the progress ratio (elapsedActive / totalDuration) identical
+      //    to what it was at the moment of pause — the marker never jumps.
+      let newEstDelivery = shipment.estimated_delivery;
+      if (newEstDelivery && pauseDurationMs > 0) {
+        const estStr = String(newEstDelivery);
+        // Parse as UTC — if date-only, treat as end-of-day UTC
+        const estMs = new Date(estStr.includes('T') ? estStr : estStr + 'T23:59:59.000Z').getTime();
+        newEstDelivery = new Date(estMs + pauseDurationMs).toISOString();
+      }
+
+      await pool.query(
+        `UPDATE shipments SET is_paused = FALSE, status = $1, paused_at = NULL,
+         total_paused_ms = $2, estimated_delivery = $3,
+         pause_category = NULL, pause_reason = NULL WHERE id = $4`,
+        [newStatus, accumulatedMs, newEstDelivery, shipment.id]
+      );
     }
 
     await pool.query(

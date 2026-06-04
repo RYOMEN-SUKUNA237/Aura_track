@@ -34,7 +34,7 @@ export interface TransportPlan {
   legs: TransportLeg[];
   totalDistanceKm: number;
   totalDurationHours: number;
-  estimatedDeliveryDate: string; // YYYY-MM-DD
+  estimatedDeliveryDate: string; // Full ISO datetime string (UTC)
   isRecommended?: boolean;
 }
 
@@ -50,9 +50,10 @@ function haversineKm(a: [number, number], b: [number, number]): number {
   return R * 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
 }
 
-function hoursToDeliveryDate(hours: number): string {
+/** Returns a full UTC ISO datetime string for 'hours from now' */
+function hoursToDeliveryDatetime(hours: number): string {
   const ms = hours * 3600 * 1000;
-  return new Date(Date.now() + ms).toISOString().split('T')[0];
+  return new Date(Date.now() + ms).toISOString();
 }
 
 export function formatPlanDuration(hours: number): string {
@@ -128,7 +129,7 @@ export async function buildTransportPlans(
       id: 'road', planName: 'Road Only', icon: '🚛', legs,
       totalDistanceKm: Math.round(routeDistanceKm),
       totalDurationHours: totalHours,
-      estimatedDeliveryDate: hoursToDeliveryDate(totalHours + 2),
+      estimatedDeliveryDate: hoursToDeliveryDatetime(totalHours + 2),
     });
   }
 
@@ -158,7 +159,7 @@ export async function buildTransportPlans(
       ],
       totalDistanceKm: Math.round(d1 + d2 + d3),
       totalDurationHours: totalHours,
-      estimatedDeliveryDate: hoursToDeliveryDate(totalHours + 4),
+      estimatedDeliveryDate: hoursToDeliveryDatetime(totalHours + 4),
       isRecommended: routeDistanceKm > 2000,
     });
   }
@@ -189,7 +190,7 @@ export async function buildTransportPlans(
       ],
       totalDistanceKm: Math.round(d1 + d2 + d3),
       totalDurationHours: totalHours,
-      estimatedDeliveryDate: hoursToDeliveryDate(totalHours + 8),
+      estimatedDeliveryDate: hoursToDeliveryDatetime(totalHours + 8),
     });
   }
 
